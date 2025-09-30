@@ -1,0 +1,7 @@
+"./src/I2C.OBJ",
+"./src/SILABS_STARTUP.OBJ",
+"./src/VL53L0X.OBJ",
+"./src/ranging_sensor_main.OBJ",
+"./src/system_init.OBJ",
+"./src/timer.OBJ"
+TO "RANGING_SENSOR.OMF.CRBUILD" REMOVEUNUSED PRINT(.\ranging_sensor.m51) PAGEWIDTH (120) PAGELENGTH (65) CLASSES( ECODE(C:0x0 - C:0xfbfe), HCONST(C:0x0 - C:0xfbfe), XDATA(X:0x0 - X:0xfff), HDATA(X:0x0 - X:0xfff))

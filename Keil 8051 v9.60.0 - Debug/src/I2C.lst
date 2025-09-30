@@ -1,0 +1,244 @@
+C51 COMPILER V9.60.0.0   I2C                                                               09/24/2025 18:57:13 PAGE 1   
+
+
+C51 COMPILER V9.60.0.0, COMPILATION OF MODULE I2C
+OBJECT MODULE PLACED IN .\src\I2C.OBJ
+COMPILER INVOKED BY: C:\SiliconLabs\SimplicityStudio\v5_3\developer\toolchains\keil_8051\9.60\BIN\C51.exe C:\Users\User\
+                    -Desktop\Laser_ranging\ranging_sensor\src\I2C.c OMF2 SMALL DEBUG OBJECTEXTEND ROM(LARGE) WARNINGLEVEL(2) FLOATFUZZY(3) OP
+                    -TIMIZE(8,SPEED) DEFINE(DEBUG=1) INTVECTOR(0X0000) INTPROMOTE INCDIR(C:\Users\User\Desktop\Laser_ranging\ranging_sensor\i
+                    -nc;C:/SiliconLabs/SimplicityStudio/v5_3/developer/sdks/8051/v4.3.1//Device/shared/si8051Base;C:/SiliconLabs/SimplicitySt
+                    -udio/v5_3/developer/sdks/8051/v4.3.1//Device/C8051F380/inc;C:\Users\User\Desktop\Laser_ranging\ranging_sensor\inc) PRINT
+                    -(.\src\I2C.lst) COND PAGEWIDTH(120) PAGELENGTH(65) OBJECT(.\src\I2C.OBJ)
+
+line level    source
+
+   1          #include <SI_C8051F380_Register_Enums.h>
+   2          #include "I2C.h"
+   3          
+   4          typedef enum
+   5          {
+   6              // Master States (最高位元組的 top 4 bits)
+   7              I2C_STATE_MASTER_START = 0xE0,   // (主機) 傳送開始條件
+   8              I2C_STATE_MASTER_TX_DATA = 0xC0, // (主機) 傳送位元組
+   9              I2C_STATE_MASTER_RX_DATA = 0x80, // (主機) 接收位元組
+  10          
+  11              // Slave States (最高位元組的 top 4 bits)
+  12              I2C_STATE_SLAVE_ADDR_RECEIVED = 0x20, // (從機) 接收位址
+  13              I2C_STATE_SLAVE_RX_DATA = 0x00,       // (從機) 接收資料位元組
+  14              I2C_STATE_SLAVE_TX_DATA = 0x40,       // (從機) 傳送資料位元組
+  15              I2C_STATE_SLAVE_STOP = 0x10,          // (從機) 偵測到停止條件
+  16              I2C_STATE_BUS_ERROR = 0x50,           // (從機/主機) 總線錯誤
+  17          } I2C_State_t;
+  18          
+  19          //-----------------------------------------------------------------------------
+  20          //-----------------------------------------------------------------------------
+  21          static volatile uint8_t xdata tx_buffer[MAX_BUFFER_SIZE]; // use ISR to W/R
+  22          static volatile uint8_t xdata rx_buffer[MAX_BUFFER_SIZE];
+  23          static volatile uint8_t tx_len = 0, tx_index = 0;
+  24          static volatile uint8_t rx_len = 0, rx_index = 0;
+  25          
+  26          static volatile uint8_t i2c_rw;
+  27          static volatile uint8_t target_addr;
+  28          
+  29          volatile uint8_t i2c_busy = 0;
+  30          volatile uint8_t NUM_ERRORS = 0;
+  31          
+  32          //-----------------------------------------------------------------------------
+  33          // I2C Core function
+  34          //-----------------------------------------------------------------------------
+  35          /* "data" as variable is forbidden!!*/
+  36          void I2C_WriteBytes(uint8_t address, const uint8_t *bytes, uint8_t length)
+  37          {
+  38   1          uint8_t i;
+  39   1      
+  40   1          while (i2c_busy != 0)
+  41   1          {
+  42   2          } // prevent override
+  43   1      
+  44   1          target_addr = address;
+  45   1          tx_len = length;
+  46   1          tx_index = 0;
+  47   1          i2c_rw = I2C_WRITE;
+  48   1          i2c_busy = 1;
+  49   1      
+  50   1          for (i = 0; i < length; i++)
+  51   1          {
+C51 COMPILER V9.60.0.0   I2C                                                               09/24/2025 18:57:13 PAGE 2   
+
+  52   2              tx_buffer[i] = bytes[i];
+  53   2          }
+  54   1      
+  55   1          SMB0CN_STA = 1;
+  56   1      }
+  57          
+  58          void I2C_ReadBytes(uint8_t address, uint8_t length)
+  59          {
+  60   1          while (i2c_busy != 0)
+  61   1          {
+  62   2          } // prevent override
+  63   1      
+  64   1          target_addr = address;
+  65   1          rx_len = length;
+  66   1          rx_index = 0;
+  67   1          i2c_rw = I2C_READ;
+  68   1          i2c_busy = 1;
+  69   1      
+  70   1          SMB0CN_STA = 1;
+  71   1      
+  72   1          while (i2c_busy != 0)
+  73   1          {
+  74   2          } // prevent override
+  75   1      }
+  76          
+  77          // device-address-wr_data
+  78          void I2C_WriteDevice(uint8_t Dev, uint8_t reg, const uint8_t *source, uint8_t length)
+  79          {
+  80   1          uint8_t i;
+  81   1          while (i2c_busy != 0)
+  82   1          {
+  83   2          } // prevent override
+  84   1      
+  85   1          target_addr = Dev;
+  86   1          tx_len = length + 1;
+  87   1          tx_buffer[0] = reg;
+  88   1      
+  89   1          for (i = 0; i < length; i++)
+  90   1          {
+  91   2              tx_buffer[i + 1] = source[i]; // load
+  92   2          }
+  93   1      
+  94   1          tx_index = 0;
+  95   1          i2c_rw = I2C_WRITE;
+  96   1          i2c_busy = 1;
+  97   1      
+  98   1          SMB0CN_STA = 1;
+  99   1      }
+ 100          
+ 101          // device-address-device-rd_data
+ 102          // *target is API bounded, need to send rx_buffer to target
+ 103          void I2C_ReadDevice(uint8_t Dev, uint8_t reg, uint8_t *target, uint8_t length)
+ 104          {
+ 105   1          uint8_t i;
+ 106   1      
+ 107   1          while (i2c_busy != 0)
+ 108   1          {
+ 109   2          } // prevent override
+ 110   1          I2C_WriteBytes(Dev, &reg, 1);
+ 111   1          I2C_ReadBytes(Dev, length);
+ 112   1      
+ 113   1          for (i = 0; i < rx_len; i++)
+ 114   1          {
+C51 COMPILER V9.60.0.0   I2C                                                               09/24/2025 18:57:13 PAGE 3   
+
+ 115   2              target[i] = rx_buffer[i];
+ 116   2          }
+ 117   1      }
+ 118          
+ 119          //-----------------------------------------------------------------------------
+ 120          // I2C ISR, will automatically trigger after received ACK/NACK
+ 121          //-----------------------------------------------------------------------------
+ 122          SI_INTERRUPT(SMBUS0_ISR, SMBUS0_IRQn)
+ 123          {
+ 124   1      
+ 125   1          if (SMB0CN_ARBLOST == 0)
+ 126   1          {
+ 127   2              switch (SMB0CN & 0xF0)
+ 128   2              {
+ 129   3              case I2C_STATE_MASTER_START:
+ 130   3                  SMB0DAT = (target_addr << 1) | i2c_rw; // LSB is R/W bit
+ 131   3                  SMB0CN_STA = 0;                        // clear for next START
+ 132   3                  break;
+ 133   3      
+ 134   3              case I2C_STATE_MASTER_TX_DATA:
+ 135   3                  if (SMB0CN_ACK)
+ 136   3                  {
+ 137   4                      if (i2c_rw == I2C_WRITE)
+ 138   4                      { // IMPORTANT!
+ 139   5                          if (tx_index >= tx_len)
+ 140   5                          {                   // finish
+ 141   6                              SMB0CN_STO = 1; // Send STOP
+ 142   6                              i2c_busy = 0;
+ 143   6                          }
+ 144   5                          else
+ 145   5                          {
+ 146   6                              SMB0DAT = tx_buffer[tx_index++];
+ 147   6                          }
+ 148   5                      }
+ 149   4                      else
+ 150   4                      {
+ 151   5                          // Wait 'til SMB0CN transit to Read
+ 152   5                      }
+ 153   4                  }
+ 154   3                  else
+ 155   3                  {                   // NACK
+ 156   4                      SMB0CN_STO = 1; // Send STOP condition, followed
+ 157   4                      SMB0CN_STA = 1; // By a START
+ 158   4                      i2c_busy = 0;
+ 159   4                      // NUM_ERRORS++;           // Indicate error
+ 160   4                  }
+ 161   3                  break;
+ 162   3      
+ 163   3              case I2C_STATE_MASTER_RX_DATA:
+ 164   3                  rx_buffer[rx_index++] = SMB0DAT;
+ 165   3      
+ 166   3                  if (rx_index < rx_len)
+ 167   3                  {
+ 168   4                      SMB0CN_ACK = 1; // ACK, next
+ 169   4                  }
+ 170   3                  else
+ 171   3                  {                   // finish
+ 172   4                      SMB0CN_ACK = 0; // 最後一個 byte，NACK
+ 173   4                      SMB0CN_STO = 1;
+ 174   4                      i2c_busy = 0;
+ 175   4                  }
+ 176   3                  break;
+ 177   3      
+C51 COMPILER V9.60.0.0   I2C                                                               09/24/2025 18:57:13 PAGE 4   
+
+ 178   3                  // case....
+ 179   3      
+ 180   3              default:
+ 181   3                  SMB0CF &= ~0x80; // Reset communication
+ 182   3                  SMB0CF |= 0x80;
+ 183   3                  SMB0CN_STA = 0;
+ 184   3                  SMB0CN_STO = 0;
+ 185   3                  SMB0CN_ACK = 0;
+ 186   3      
+ 187   3                  i2c_busy = 0; // Free SMBus
+ 188   3                  NUM_ERRORS++;
+ 189   3                  break;
+ 190   3              }
+ 191   2          }
+ 192   1      
+ 193   1          else
+ 194   1          {
+ 195   2              SMB0CF &= ~0x80; // Reset communication
+ 196   2              SMB0CF |= 0x80;
+ 197   2              SMB0CN_STA = 0;
+ 198   2              SMB0CN_STO = 0;
+ 199   2              SMB0CN_ACK = 0;
+ 200   2      
+ 201   2              i2c_busy = 0; // Free SMBus
+ 202   2              NUM_ERRORS++;
+ 203   2          }
+ 204   1      
+ 205   1          SMB0CN_SI = 0; // MUST!
+ 206   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =    388    ----
+   CONSTANT SIZE    =   ----    ----
+   XDATA SIZE       =      8    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =      8      17
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+   EDATA SIZE       =   ----    ----
+   HDATA SIZE       =   ----    ----
+   XDATA CONST SIZE =   ----    ----
+   FAR CONST SIZE   =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)

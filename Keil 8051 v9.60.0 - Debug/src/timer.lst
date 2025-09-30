@@ -1,0 +1,159 @@
+C51 COMPILER V9.60.0.0   TIMER                                                             09/24/2025 18:57:13 PAGE 1   
+
+
+C51 COMPILER V9.60.0.0, COMPILATION OF MODULE TIMER
+OBJECT MODULE PLACED IN .\src\timer.OBJ
+COMPILER INVOKED BY: C:\SiliconLabs\SimplicityStudio\v5_3\developer\toolchains\keil_8051\9.60\BIN\C51.exe C:\Users\User\
+                    -Desktop\Laser_ranging\ranging_sensor\src\timer.c OMF2 SMALL DEBUG OBJECTEXTEND ROM(LARGE) WARNINGLEVEL(2) FLOATFUZZY(3) 
+                    -OPTIMIZE(8,SPEED) DEFINE(DEBUG=1) INTVECTOR(0X0000) INTPROMOTE INCDIR(C:\Users\User\Desktop\Laser_ranging\ranging_sensor
+                    -\inc;C:/SiliconLabs/SimplicityStudio/v5_3/developer/sdks/8051/v4.3.1//Device/shared/si8051Base;C:/SiliconLabs/Simplicity
+                    -Studio/v5_3/developer/sdks/8051/v4.3.1//Device/C8051F380/inc;C:\Users\User\Desktop\Laser_ranging\ranging_sensor\inc) PRI
+                    -NT(.\src\timer.lst) COND PAGEWIDTH(120) PAGELENGTH(65) OBJECT(.\src\timer.OBJ)
+
+line level    source
+
+   1          #include <SI_C8051F380_Register_Enums.h>                // SFR declarations
+   2          #include "system_init.h"
+   3          #include "I2C.h"
+   4          #include "timer.h"
+   5          
+   6          //-----------------------------------------------------------------------------
+   7          // Variables
+   8          //-----------------------------------------------------------------------------
+   9          bool timer2_done = 0;
+  10          
+  11          
+  12          /* Oscillator Initialization is in system_init.h */
+  13          //-----------------------------------------------------------------------------
+  14          // Timer Initialization
+  15          //-----------------------------------------------------------------------------
+  16          void Init_Timers(void)
+  17          {
+  18   1        Timer1_Init();
+  19   1        Timer2_Init();
+  20   1        Timer3_Init();
+  21   1      }
+  22          
+  23          
+  24          // - Timer1 used as I2C/SMBus clock source. The maximum SCL frequency will be
+  25          //   approximately 1/3 the Timer1 overflow rate
+  26          void Timer1_Init(void) {
+  27   1      #if ((SYSCLK/I2C_CLOCK/3) < 255)
+  28   1         #define SCALE 1
+  29   1            CKCON |= 0x08;                   // Timer1 clock source = SYSCLK
+  30   1      #elif ((SYSCLK/I2C_CLOCK/4/3) < 255)
+                 #define SCALE 4
+                    CKCON |= 0x01;
+                    CKCON &= ~0x0A;                  // Timer1 clock source = SYSCLK / 4
+              #elif ((SYSCLK/I2C_CLOCK/12/3) < 255)
+                 #define SCALE 8
+                    CKCON &= ~0x0B;                  // Timer1 clock source = SYSCLK / 12
+              #elif ((SYSCLK/I2C_CLOCK/48/3) < 255)
+                 #define SCALE 4
+                    CKCON |= 0x02;
+                    CKCON &= ~0x09;                  // Timer1 clock source = SYSCLK / 48
+              #else
+                 #error "Error: Timer1 cannot produce the desired SMBus frequency"
+              #endif
+  44   1      
+  45   1         TMOD = 0x20;                        // Timer1 in 8-bit auto-reload mode
+  46   1      
+  47   1         // reload value
+  48   1         TH1 = -(SYSCLK/I2C_CLOCK/SCALE/3);
+  49   1         TL1 = TH1;                          // Init Timer1
+  50   1      
+  51   1         TCON_TR1 = 1;                       // Timer1 enabled
+C51 COMPILER V9.60.0.0   TIMER                                                             09/24/2025 18:57:13 PAGE 2   
+
+  52   1      }
+  53          
+  54          // General micro-second counter
+  55          void Timer2_Init (void)
+  56          {
+  57   1        TMR2CN = 0x00;
+  58   1        TMR2CN_T2XCLK = 0;  //  Timer2 clock source = SYSCLK/12 = 1MHz
+  59   1      
+  60   1        IE_ET2 = 1;   // Timer2 interrupt enable
+  61   1      }
+  62          
+  63          
+  64          // -Timer3 configured for use by the SMBus low timeout detect
+  65          void Timer3_Init (void)
+  66          {
+  67   1         TMR3CN = 0x00;                      // Timer3 configured for 16-bit auto-
+  68   1                                             // reload, low-byte interrupt disabled
+  69   1      
+  70   1         CKCON &= ~0x40;                     // Timer3 uses SYSCLK/12
+  71   1      
+  72   1         TMR3RL = (uint16_t) -(SYSCLK/12/40);  // Timer3 configured to overflow after
+  73   1         TMR3 = TMR3RL;                      // ~25ms (for SMBus low timeout detect):
+  74   1                                             // 1/.025 = 40
+  75   1      
+  76   1         EIE1 |= 0x80;                       // Timer3 interrupt enable
+  77   1         TMR3CN |= 0x04;                     // Start Timer3
+  78   1      }
+  79          
+  80          //-----------------------------------------------------------------------------
+  81          // Countdown function
+  82          //-----------------------------------------------------------------------------
+  83          // 1 time counter, Timer2 clk = 1MHz
+  84          void Countdown_ms(uint8_t ms)
+  85          {
+  86   1        uint16_t us = ms * 1000;
+  87   1      
+  88   1        if (us > 65535){us = 65535;}  // max value
+  89   1        TMR2RL = (uint16_t) -us;  // set reload value
+  90   1      
+  91   1        timer2_done = 0;  //reset flag
+  92   1        TMR2CN_TR2 = 1;  // Start Timer2
+  93   1      }
+  94          
+  95          bool Timeout_CheckExpired(void)
+  96          {
+  97   1        return timer2_done;
+  98   1      }
+  99          
+ 100          //-----------------------------------------------------------------------------
+ 101          // ISR is unique so can't be in .h
+ 102          //-----------------------------------------------------------------------------
+ 103          // -Times-up
+ 104          SI_INTERRUPT(TIMER2_ISR, TIMER2_IRQn)
+ 105          {
+ 106   1        timer2_done = 1;
+ 107   1      
+ 108   1        TMR2CN &= ~0xC4;  // clear interrupt flags,
+ 109   1                          // stop timer2 from reload
+ 110   1      }
+ 111          
+ 112          
+ 113          
+ 114          // -Timeout
+C51 COMPILER V9.60.0.0   TIMER                                                             09/24/2025 18:57:13 PAGE 3   
+
+ 115          SI_INTERRUPT(TIMER3_ISR, TIMER3_IRQn)
+ 116          {
+ 117   1         SMB0CF &= ~0x80;                    // Disable SMBus
+ 118   1         SMB0CF |= 0x80;                     // Re-enable SMBus
+ 119   1         TMR3CN &= ~0x80;                    // Clear Timer3 interrupt-pending flag
+ 120   1         SMB0CN_STA = 0;
+ 121   1         i2c_busy = 0;                       // Free SMBus/I2C
+ 122   1      }
+ 123          
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =    138    ----
+   CONSTANT SIZE    =   ----    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =   ----    ----
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =      1    ----
+   EDATA SIZE       =   ----    ----
+   HDATA SIZE       =   ----    ----
+   XDATA CONST SIZE =   ----    ----
+   FAR CONST SIZE   =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)

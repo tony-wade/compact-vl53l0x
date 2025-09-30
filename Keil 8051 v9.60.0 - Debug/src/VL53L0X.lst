@@ -1,0 +1,1111 @@
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 1   
+
+
+C51 COMPILER V9.60.0.0, COMPILATION OF MODULE VL53L0X
+OBJECT MODULE PLACED IN .\src\VL53L0X.OBJ
+COMPILER INVOKED BY: C:\SiliconLabs\SimplicityStudio\v5_3\developer\toolchains\keil_8051\9.60\BIN\C51.exe C:\Users\User\
+                    -Desktop\Laser_ranging\ranging_sensor\src\VL53L0X.c OMF2 SMALL DEBUG OBJECTEXTEND ROM(LARGE) WARNINGLEVEL(2) FLOATFUZZY(3
+                    -) OPTIMIZE(8,SPEED) DEFINE(DEBUG=1) INTVECTOR(0X0000) INTPROMOTE INCDIR(C:\Users\User\Desktop\Laser_ranging\ranging_sens
+                    -or\inc;C:/SiliconLabs/SimplicityStudio/v5_3/developer/sdks/8051/v4.3.1//Device/shared/si8051Base;C:/SiliconLabs/Simplici
+                    -tyStudio/v5_3/developer/sdks/8051/v4.3.1//Device/C8051F380/inc;C:\Users\User\Desktop\Laser_ranging\ranging_sensor\inc) P
+                    -RINT(.\src\VL53L0X.lst) COND PAGEWIDTH(120) PAGELENGTH(65) OBJECT(.\src\VL53L0X.OBJ)
+
+line level    source
+
+   1          // Most of the functionality of this library is based on the VL53L0X API
+   2          // provided by ST (STSW-IMG005), and some of the explanatory comments are quoted
+   3          // or paraphrased from the API source code, API user manual (UM2039), and the
+   4          // VL53L0X datasheet.
+   5          
+   6          #include "VL53L0X.h"
+   7          #include "I2C.h"
+   8          #include "timer.h"
+   9          
+  10          //-----------------------------------------------------------------------------
+  11          // Defines
+  12          //-----------------------------------------------------------------------------
+  13          
+  14          // Record the current time to check an upcoming timeout against
+  15          // #define startTimeout() (timeout_start_ms = millis())
+  16          
+  17          // Check if timeout is enabled (set to nonzero value) and has expired
+  18          // #define checkTimeoutExpired() (io_timeout > 0 && ((uint16_t)millis() - timeout_start_ms) > io_timeout)
+  19          
+  20          // Decode VCSEL (vertical cavity surface emitting laser) pulse period in PCLKs
+  21          // from register value
+  22          // based on VL53L0X_decode_vcsel_period()
+  23          #define decodeVcselPeriod(reg_val) (((reg_val) + 1) << 1)
+  24          
+  25          // Encode VCSEL pulse period register value from period in PCLKs
+  26          // based on VL53L0X_encode_vcsel_period()
+  27          #define encodeVcselPeriod(period_pclks) (((period_pclks) >> 1) - 1)
+  28          
+  29          // Calculate macro period in *nanoseconds* from VCSEL period in PCLKs
+  30          // based on VL53L0X_calc_macro_period_ps()
+  31          // PLL_period_ps = 1655; macro_period_vclks = 2304
+  32          #define calcMacroPeriod(vcsel_period_pclks) ((((uint32_t)2304 * (vcsel_period_pclks) * 1655) + 500) / 1000
+             -)
+  33          
+  34          //-----------------------------------------------------------------------------
+  35          // General Buffers
+  36          //-----------------------------------------------------------------------------
+  37          static uint8_t xdata tx_buf[4];
+  38          static uint8_t xdata rx_buf[4];
+  39          
+  40          //-----------------------------------------------------------------------------
+  41          // VL53L0X Core Functions  (Replace with your implentation)
+  42          //-----------------------------------------------------------------------------
+  43          
+  44          // Write an 8-bit register
+  45          void VL53L0X_writeReg(struct VL53L0X *dev, uint8_t reg, uint8_t value)
+  46          {
+  47   1        tx_buf[0] = value;
+  48   1        I2C_WriteDevice(dev->addr, reg, tx_buf, 1);
+  49   1      }
+  50          
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 2   
+
+  51          // Write a 16-bit register
+  52          void VL53L0X_writeReg16Bit(struct VL53L0X *dev, uint8_t reg, uint16_t value)
+  53          {
+  54   1        tx_buf[0] = (uint8_t)(value >> 8);
+  55   1        tx_buf[1] = (uint8_t)(value & 0xFF);
+  56   1        I2C_WriteDevice(dev->addr, reg, tx_buf, 2);
+  57   1      }
+  58          
+  59          // Write a 32-bit register
+  60          void VL53L0X_writeReg32Bit(struct VL53L0X *dev, uint8_t reg, uint32_t value)
+  61          {
+  62   1        tx_buf[0] = (uint8_t)(value >> 24);
+  63   1        tx_buf[1] = (uint8_t)(value >> 16);
+  64   1        tx_buf[2] = (uint8_t)(value >> 8);
+  65   1        tx_buf[3] = (uint8_t)(value & 0xFF);
+  66   1        I2C_WriteDevice(dev->addr, reg, tx_buf, 4);
+  67   1      }
+  68          
+  69          // Read an 8-bit register
+  70          uint8_t VL53L0X_readReg(struct VL53L0X *dev, uint8_t reg)
+  71          {
+  72   1        xdata uint8_t value;
+  73   1        I2C_ReadDevice(dev->addr, reg, &value, 1);
+  74   1        return value;
+  75   1      }
+  76          
+  77          // Read a 16-bit register
+  78          uint16_t VL53L0X_readReg16Bit(struct VL53L0X *dev, uint8_t reg)
+  79          {
+  80   1        xdata uint16_t value;
+  81   1        I2C_ReadDevice(dev->addr, reg, rx_buf, 2);
+  82   1        value = (uint16_t)(rx_buf[0] << 8);
+  83   1        value |= (uint16_t)rx_buf[1];
+  84   1        return value;
+  85   1      }
+  86          
+  87          // Read a 32-bit register
+  88          uint32_t VL53L0X_readReg32Bit(struct VL53L0X *dev, uint8_t reg)
+  89          {
+  90   1        xdata uint32_t value;
+  91   1        I2C_ReadDevice(dev->addr, reg, rx_buf, 4);
+  92   1        value = (uint32_t)(rx_buf[0] << 24);
+  93   1        value |= (uint32_t)(rx_buf[1] << 16);
+  94   1        value |= (uint32_t)(rx_buf[2] << 8);
+  95   1        value |= (uint32_t)rx_buf[3];
+  96   1        return value;
+  97   1      }
+  98          
+  99          // Write an arbitrary number of bytes from the given array to the sensor,
+ 100          // starting at the given register
+ 101          void VL53L0X_writeMulti(struct VL53L0X *dev, uint8_t reg, uint8_t *src, uint8_t count)
+ 102          {
+ 103   1        I2C_WriteDevice(dev->addr, reg, src, count);
+ 104   1      }
+ 105          
+ 106          // Read an arbitrary number of bytes from the sensor, starting at the given
+ 107          // register, into the given array
+ 108          void VL53L0X_readMulti(struct VL53L0X *dev, uint8_t reg, uint8_t *dst, uint8_t count)
+ 109          {
+ 110   1        I2C_ReadDevice(dev->addr, reg, dst, count);
+ 111   1      }
+ 112          
+ 113          //-----------------------------------------------------------------------------
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 3   
+
+ 114          // Timeout Function (Replace with your implentation)
+ 115          //-----------------------------------------------------------------------------
+ 116          void VL53L0X_startTimeout(struct VL53L0X *dev)
+ 117          {
+ 118   1        Countdown_ms(dev->io_timeout);
+ 119   1      }
+ 120          
+ 121          bool VL53L0X_checkTimeoutExpired(struct VL53L0X *dev)
+ 122          {
+ 123   1        return Timeout_CheckExpired();
+ 124   1      }
+*** WARNING C280 IN LINE 121 OF C:\Users\User\Desktop\Laser_ranging\ranging_sensor\src\VL53L0X.c: 'dev': unreferenced lo
+             -cal variable
+ 125          
+ 126          //-----------------------------------------------------------------------------
+ 127          // VL53L0X Control Functions
+ 128          //-----------------------------------------------------------------------------
+ 129          void VL53L0X_setAddress(struct VL53L0X *dev, uint8_t new_addr)
+ 130          {
+ 131   1        VL53L0X_writeReg(dev, I2C_SLAVE_DEVICE_ADDRESS, new_addr & 0x7F);
+ 132   1        dev->addr = new_addr;
+ 133   1      }
+ 134          
+ 135          // Initialize sensor using sequence based on VL53L0X_DataInit(),
+ 136          // VL53L0X_StaticInit(), and VL53L0X_PerformRefCalibration().
+ 137          // This function does not perform reference SPAD calibration
+ 138          // (VL53L0X_PerformRefSpadManagement()), since the API user manual says that it
+ 139          // is performed by ST on the bare modules; it seems like that should work well
+ 140          // enough unless a cover glass is added.
+ 141          // If io_2v8 (optional) is true or not given, the sensor is configured for 2V8
+ 142          // mode.
+ 143          bool VL53L0X_init(struct VL53L0X *dev)
+ 144          {
+ 145   1        // modification for ancient C
+ 146   1        uint8_t spad_count;
+ 147   1        unsigned char spad_type_is_aperture;
+ 148   1        xdata uint8_t ref_spad_map[6];
+ 149   1        uint8_t first_spad_to_enable;
+ 150   1        uint8_t spads_enabled;
+ 151   1        uint8_t i;
+ 152   1        uint8_t val;
+ 153   1      
+ 154   1        // VL53L0X_DataInit() begin
+ 155   1        // sensor uses 1V8 mode for I/O by default; switch to 2V8 mode if necessary
+ 156   1        if (dev->io_2v8)
+ 157   1        {
+ 158   2          // these kind would cause 8051 i2c err
+ 159   2          // VL53L0X_writeReg(dev, VHV_CONFIG_PAD_SCL_SDA__EXTSUP_HV, VL53L0X_readReg(dev, VHV_CONFIG_PAD_SCL_SD
+             -A__EXTSUP_HV) | 0x01 );
+ 160   2          val = VL53L0X_readReg(dev, VHV_CONFIG_PAD_SCL_SDA__EXTSUP_HV);
+ 161   2          VL53L0X_writeReg(dev, VHV_CONFIG_PAD_SCL_SDA__EXTSUP_HV, val | 0x01); // set bit 0
+ 162   2        }
+ 163   1      
+ 164   1        // "Set I2C standard mode"
+ 165   1        VL53L0X_writeReg(dev, 0x88, 0x00);
+ 166   1      
+ 167   1        VL53L0X_writeReg(dev, 0x80, 0x01);
+ 168   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 169   1        VL53L0X_writeReg(dev, 0x00, 0x00);
+ 170   1        dev->stop_variable = VL53L0X_readReg(dev, 0x91);
+ 171   1        VL53L0X_writeReg(dev, 0x00, 0x01);
+ 172   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 173   1        VL53L0X_writeReg(dev, 0x80, 0x00);
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 4   
+
+ 174   1      
+ 175   1        // disable SIGNAL_RATE_MSRC (bit 1) and SIGNAL_RATE_PRE_RANGE (bit 4) limit checks
+ 176   1        VL53L0X_writeReg(dev, MSRC_CONFIG_CONTROL, VL53L0X_readReg(dev, MSRC_CONFIG_CONTROL) | 0x12);
+ 177   1      
+ 178   1        // set final range signal rate limit to 0.25 MCPS (million counts per second)
+ 179   1        VL53L0X_setSignalRateLimit(dev, 0.25);
+ 180   1      
+ 181   1        VL53L0X_writeReg(dev, SYSTEM_SEQUENCE_CONFIG, 0xFF);
+ 182   1      
+ 183   1        // VL53L0X_DataInit() end
+ 184   1      
+ 185   1        // VL53L0X_StaticInit() begin
+ 186   1        if (!VL53L0X_getSpadInfo(dev, &spad_count, &spad_type_is_aperture))
+ 187   1        {
+ 188   2          return false;
+ 189   2        }
+ 190   1      
+ 191   1        // The SPAD map (RefGoodSpadMap) is read by VL53L0X_get_info_from_device() in
+ 192   1        // the API, but the same data seems to be more easily readable from
+ 193   1        // GLOBAL_CONFIG_SPAD_ENABLES_REF_0 through _6, so read it from there
+ 194   1        VL53L0X_readMulti(dev, GLOBAL_CONFIG_SPAD_ENABLES_REF_0, ref_spad_map, 6);
+ 195   1      
+ 196   1        // -- VL53L0X_set_reference_spads() begin (assume NVM values are valid)
+ 197   1      
+ 198   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 199   1        VL53L0X_writeReg(dev, DYNAMIC_SPAD_REF_EN_START_OFFSET, 0x00);
+ 200   1        VL53L0X_writeReg(dev, DYNAMIC_SPAD_NUM_REQUESTED_REF_SPAD, 0x2C);
+ 201   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 202   1        VL53L0X_writeReg(dev, GLOBAL_CONFIG_REF_EN_START_SELECT, 0xB4);
+ 203   1      
+ 204   1        first_spad_to_enable = spad_type_is_aperture ? 12 : 0; // 12 is the first aperture spad
+ 205   1        spads_enabled = 0;
+ 206   1      
+ 207   1        for (i = 0; i < 48; i++)
+ 208   1        {
+ 209   2          if (i < first_spad_to_enable || spads_enabled == spad_count)
+ 210   2          {
+ 211   3            // This bit is lower than the first one that should be enabled, or
+ 212   3            // (reference_spad_count) bits have already been enabled, so zero this bit
+ 213   3            ref_spad_map[i / 8] &= ~(1 << (i % 8));
+ 214   3          }
+ 215   2          else if ((ref_spad_map[i / 8] >> (i % 8)) & 0x1)
+ 216   2          {
+ 217   3            spads_enabled++;
+ 218   3          }
+ 219   2        }
+ 220   1      
+ 221   1        VL53L0X_writeMulti(dev, GLOBAL_CONFIG_SPAD_ENABLES_REF_0, ref_spad_map, 6);
+ 222   1      
+ 223   1        // -- VL53L0X_set_reference_spads() end
+ 224   1      
+ 225   1        // -- VL53L0X_load_tuning_settings() begin
+ 226   1        // DefaultTuningSettings from vl53l0x_tuning.h
+ 227   1      
+ 228   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 229   1        VL53L0X_writeReg(dev, 0x00, 0x00);
+ 230   1      
+ 231   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 232   1        VL53L0X_writeReg(dev, 0x09, 0x00);
+ 233   1        VL53L0X_writeReg(dev, 0x10, 0x00);
+ 234   1        VL53L0X_writeReg(dev, 0x11, 0x00);
+ 235   1      
+ 236   1        VL53L0X_writeReg(dev, 0x24, 0x01);
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 5   
+
+ 237   1        VL53L0X_writeReg(dev, 0x25, 0xFF);
+ 238   1        VL53L0X_writeReg(dev, 0x75, 0x00);
+ 239   1      
+ 240   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 241   1        VL53L0X_writeReg(dev, 0x4E, 0x2C);
+ 242   1        VL53L0X_writeReg(dev, 0x48, 0x00);
+ 243   1        VL53L0X_writeReg(dev, 0x30, 0x20);
+ 244   1      
+ 245   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 246   1        VL53L0X_writeReg(dev, 0x30, 0x09);
+ 247   1        VL53L0X_writeReg(dev, 0x54, 0x00);
+ 248   1        VL53L0X_writeReg(dev, 0x31, 0x04);
+ 249   1        VL53L0X_writeReg(dev, 0x32, 0x03);
+ 250   1        VL53L0X_writeReg(dev, 0x40, 0x83);
+ 251   1        VL53L0X_writeReg(dev, 0x46, 0x25);
+ 252   1        VL53L0X_writeReg(dev, 0x60, 0x00);
+ 253   1        VL53L0X_writeReg(dev, 0x27, 0x00);
+ 254   1        VL53L0X_writeReg(dev, 0x50, 0x06);
+ 255   1        VL53L0X_writeReg(dev, 0x51, 0x00);
+ 256   1        VL53L0X_writeReg(dev, 0x52, 0x96);
+ 257   1        VL53L0X_writeReg(dev, 0x56, 0x08);
+ 258   1        VL53L0X_writeReg(dev, 0x57, 0x30);
+ 259   1        VL53L0X_writeReg(dev, 0x61, 0x00);
+ 260   1        VL53L0X_writeReg(dev, 0x62, 0x00);
+ 261   1        VL53L0X_writeReg(dev, 0x64, 0x00);
+ 262   1        VL53L0X_writeReg(dev, 0x65, 0x00);
+ 263   1        VL53L0X_writeReg(dev, 0x66, 0xA0);
+ 264   1      
+ 265   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 266   1        VL53L0X_writeReg(dev, 0x22, 0x32);
+ 267   1        VL53L0X_writeReg(dev, 0x47, 0x14);
+ 268   1        VL53L0X_writeReg(dev, 0x49, 0xFF);
+ 269   1        VL53L0X_writeReg(dev, 0x4A, 0x00);
+ 270   1      
+ 271   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 272   1        VL53L0X_writeReg(dev, 0x7A, 0x0A);
+ 273   1        VL53L0X_writeReg(dev, 0x7B, 0x00);
+ 274   1        VL53L0X_writeReg(dev, 0x78, 0x21);
+ 275   1      
+ 276   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 277   1        VL53L0X_writeReg(dev, 0x23, 0x34);
+ 278   1        VL53L0X_writeReg(dev, 0x42, 0x00);
+ 279   1        VL53L0X_writeReg(dev, 0x44, 0xFF);
+ 280   1        VL53L0X_writeReg(dev, 0x45, 0x26);
+ 281   1        VL53L0X_writeReg(dev, 0x46, 0x05);
+ 282   1        VL53L0X_writeReg(dev, 0x40, 0x40);
+ 283   1        VL53L0X_writeReg(dev, 0x0E, 0x06);
+ 284   1        VL53L0X_writeReg(dev, 0x20, 0x1A);
+ 285   1        VL53L0X_writeReg(dev, 0x43, 0x40);
+ 286   1      
+ 287   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 288   1        VL53L0X_writeReg(dev, 0x34, 0x03);
+ 289   1        VL53L0X_writeReg(dev, 0x35, 0x44);
+ 290   1      
+ 291   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 292   1        VL53L0X_writeReg(dev, 0x31, 0x04);
+ 293   1        VL53L0X_writeReg(dev, 0x4B, 0x09);
+ 294   1        VL53L0X_writeReg(dev, 0x4C, 0x05);
+ 295   1        VL53L0X_writeReg(dev, 0x4D, 0x04);
+ 296   1      
+ 297   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 298   1        VL53L0X_writeReg(dev, 0x44, 0x00);
+ 299   1        VL53L0X_writeReg(dev, 0x45, 0x20);
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 6   
+
+ 300   1        VL53L0X_writeReg(dev, 0x47, 0x08);
+ 301   1        VL53L0X_writeReg(dev, 0x48, 0x28);
+ 302   1        VL53L0X_writeReg(dev, 0x67, 0x00);
+ 303   1        VL53L0X_writeReg(dev, 0x70, 0x04);
+ 304   1        VL53L0X_writeReg(dev, 0x71, 0x01);
+ 305   1        VL53L0X_writeReg(dev, 0x72, 0xFE);
+ 306   1        VL53L0X_writeReg(dev, 0x76, 0x00);
+ 307   1        VL53L0X_writeReg(dev, 0x77, 0x00);
+ 308   1      
+ 309   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 310   1        VL53L0X_writeReg(dev, 0x0D, 0x01);
+ 311   1      
+ 312   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 313   1        VL53L0X_writeReg(dev, 0x80, 0x01);
+ 314   1        VL53L0X_writeReg(dev, 0x01, 0xF8);
+ 315   1      
+ 316   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 317   1        VL53L0X_writeReg(dev, 0x8E, 0x01);
+ 318   1        VL53L0X_writeReg(dev, 0x00, 0x01);
+ 319   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 320   1        VL53L0X_writeReg(dev, 0x80, 0x00);
+ 321   1      
+ 322   1        // -- VL53L0X_load_tuning_settings() end
+ 323   1      
+ 324   1        // "Set interrupt config to new sample ready"
+ 325   1        // -- VL53L0X_SetGpioConfig() begin
+ 326   1      
+ 327   1        VL53L0X_writeReg(dev, SYSTEM_INTERRUPT_CONFIG_GPIO, 0x04);
+ 328   1        VL53L0X_writeReg(dev, GPIO_HV_MUX_ACTIVE_HIGH, VL53L0X_readReg(dev, GPIO_HV_MUX_ACTIVE_HIGH) & ~0x10); /
+             -/ active low
+ 329   1        VL53L0X_writeReg(dev, SYSTEM_INTERRUPT_CLEAR, 0x01);
+ 330   1      
+ 331   1        // -- VL53L0X_SetGpioConfig() end
+ 332   1      
+ 333   1        dev->measurement_timing_budget_us = VL53L0X_getMeasurementTimingBudget(dev);
+ 334   1      
+ 335   1        // "Disable MSRC and TCC by default"
+ 336   1        // MSRC = Minimum Signal Rate Check
+ 337   1        // TCC = Target CentreCheck
+ 338   1        // -- VL53L0X_SetSequenceStepEnable() begin
+ 339   1      
+ 340   1        VL53L0X_writeReg(dev, SYSTEM_SEQUENCE_CONFIG, 0xE8);
+ 341   1      
+ 342   1        // -- VL53L0X_SetSequenceStepEnable() end
+ 343   1      
+ 344   1        // "Recalculate timing budget"
+ 345   1        VL53L0X_setMeasurementTimingBudget(dev, dev->measurement_timing_budget_us);
+ 346   1      
+ 347   1        // VL53L0X_StaticInit() end
+ 348   1      
+ 349   1        // VL53L0X_PerformRefCalibration() begin (VL53L0X_perform_ref_calibration())
+ 350   1      
+ 351   1        // -- VL53L0X_perform_vhv_calibration() begin
+ 352   1      
+ 353   1        VL53L0X_writeReg(dev, SYSTEM_SEQUENCE_CONFIG, 0x01);
+ 354   1        if (!VL53L0X_performSingleRefCalibration(dev, 0x40))
+ 355   1        {
+ 356   2          return false;
+ 357   2        }
+ 358   1      
+ 359   1        // -- VL53L0X_perform_vhv_calibration() end
+ 360   1      
+ 361   1        // -- VL53L0X_perform_phase_calibration() begin
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 7   
+
+ 362   1      
+ 363   1        VL53L0X_writeReg(dev, SYSTEM_SEQUENCE_CONFIG, 0x02);
+ 364   1        if (!VL53L0X_performSingleRefCalibration(dev, 0x00))
+ 365   1        {
+ 366   2          return false;
+ 367   2        }
+ 368   1      
+ 369   1        // -- VL53L0X_perform_phase_calibration() end
+ 370   1      
+ 371   1        // "restore the previous Sequence Config"
+ 372   1        VL53L0X_writeReg(dev, SYSTEM_SEQUENCE_CONFIG, 0xE8);
+ 373   1      
+ 374   1        // VL53L0X_PerformRefCalibration() end
+ 375   1      
+ 376   1        return true;
+ 377   1      }
+ 378          
+ 379          // Set the return signal rate limit check value in units of MCPS (mega counts
+ 380          // per second). "This represents the amplitude of the signal reflected from the
+ 381          // target and detected by the device"; setting this limit presumably determines
+ 382          // the minimum measurement necessary for the sensor to report a valid reading.
+ 383          // Setting a lower limit increases the potential range of the sensor but also
+ 384          // seems to increase the likelihood of getting an inaccurate reading because of
+ 385          // unwanted reflections from objects other than the intended target.
+ 386          // Defaults to 0.25 MCPS as initialized by the ST API and this library.
+ 387          bool VL53L0X_setSignalRateLimit(struct VL53L0X *dev, float limit_Mcps)
+ 388          {
+ 389   1        if (limit_Mcps < 0 || limit_Mcps > 511.99)
+ 390   1        {
+ 391   2          return false;
+ 392   2        }
+ 393   1      
+ 394   1        // Q9.7 fixed point format (9 integer bits, 7 fractional bits)
+ 395   1        VL53L0X_writeReg16Bit(dev, FINAL_RANGE_CONFIG_MIN_COUNT_RATE_RTN_LIMIT, limit_Mcps * (1 << 7));
+ 396   1        return true;
+ 397   1      }
+ 398          
+ 399          // Get the return signal rate limit check value in MCPS
+ 400          float VL53L0X_getSignalRateLimit(struct VL53L0X *dev)
+ 401          {
+ 402   1        return (float)VL53L0X_readReg16Bit(dev, FINAL_RANGE_CONFIG_MIN_COUNT_RATE_RTN_LIMIT) / (1 << 7);
+ 403   1      }
+ 404          
+ 405          // Set the measurement timing budget in microseconds, which is the time allowed
+ 406          // for one measurement. A longer timing budget allows for more accurate
+ 407          //  measurements. Increasing the budget by a factor of N decreases the range
+ 408          // measurement standard deviation by a factor of sqrt(N).
+ 409          // Defaults to about 33 milliseconds; the minimum is 20 ms.
+ 410          // based on VL53L0X_set_measurement_timing_budget_micro_seconds()
+ 411          bool VL53L0X_setMeasurementTimingBudget(struct VL53L0X *dev, uint32_t budget_us)
+ 412          {
+ 413   1        uint32_t used_budget_us;
+ 414   1        uint32_t final_range_timeout_us;
+ 415   1        uint16_t final_range_timeout_mclks;
+ 416   1      
+ 417   1        xdata struct VL53L0X_SequenceStepEnables enables;
+ 418   1        xdata struct VL53L0X_SequenceStepTimeouts timeouts;
+ 419   1      
+ 420   1        uint16_t const StartOverhead = 1320; // note that this is different than the value in get_
+ 421   1        uint16_t const EndOverhead = 960;
+ 422   1        uint16_t const MsrcOverhead = 660;
+ 423   1        uint16_t const TccOverhead = 590;
+ 424   1        uint16_t const DssOverhead = 690;
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 8   
+
+ 425   1        uint16_t const PreRangeOverhead = 660;
+ 426   1        uint16_t const FinalRangeOverhead = 550;
+ 427   1      
+ 428   1        uint32_t const MinTimingBudget = 20000;
+ 429   1      
+ 430   1        if (budget_us < MinTimingBudget)
+ 431   1        {
+ 432   2          return false;
+ 433   2        }
+ 434   1      
+ 435   1        used_budget_us = StartOverhead + EndOverhead;
+ 436   1      
+ 437   1        VL53L0X_getSequenceStepEnables(dev, &enables);
+ 438   1        VL53L0X_getSequenceStepTimeouts(dev, &enables, &timeouts);
+ 439   1      
+ 440   1        if (enables.tcc)
+ 441   1        {
+ 442   2          used_budget_us += (timeouts.msrc_dss_tcc_us + TccOverhead);
+ 443   2        }
+ 444   1      
+ 445   1        if (enables.dss)
+ 446   1        {
+ 447   2          used_budget_us += 2 * (timeouts.msrc_dss_tcc_us + DssOverhead);
+ 448   2        }
+ 449   1        else if (enables.msrc)
+ 450   1        {
+ 451   2          used_budget_us += (timeouts.msrc_dss_tcc_us + MsrcOverhead);
+ 452   2        }
+ 453   1      
+ 454   1        if (enables.pre_range)
+ 455   1        {
+ 456   2          used_budget_us += (timeouts.pre_range_us + PreRangeOverhead);
+ 457   2        }
+ 458   1      
+ 459   1        if (enables.final_range)
+ 460   1        {
+ 461   2          used_budget_us += FinalRangeOverhead;
+ 462   2      
+ 463   2          // "Note that the final range timeout is determined by the timing
+ 464   2          // budget and the sum of all other timeouts within the sequence.
+ 465   2          // If there is no room for the final range timeout, then an error
+ 466   2          // will be set. Otherwise the remaining time will be applied to
+ 467   2          // the final range."
+ 468   2          if (used_budget_us > budget_us)
+ 469   2          {
+ 470   3            // "Requested timeout too big."
+ 471   3            return false;
+ 472   3          }
+ 473   2      
+ 474   2          final_range_timeout_us = budget_us - used_budget_us;
+ 475   2      
+ 476   2          // set_sequence_step_timeout() begin
+ 477   2          // (SequenceStepId == VL53L0X_SEQUENCESTEP_FINAL_RANGE)
+ 478   2      
+ 479   2          // "For the final range timeout, the pre-range timeout
+ 480   2          //  must be added. To do this both final and pre-range
+ 481   2          //  timeouts must be expressed in macro periods MClks
+ 482   2          //  because they have different vcsel periods."
+ 483   2      
+ 484   2          final_range_timeout_mclks = VL53L0X_timeoutMicrosecondsToMclks(final_range_timeout_us, timeouts.final_
+             -range_vcsel_period_pclks);
+ 485   2      
+ 486   2          if (enables.pre_range)
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 9   
+
+ 487   2          {
+ 488   3            final_range_timeout_mclks += timeouts.pre_range_mclks;
+ 489   3          }
+ 490   2      
+ 491   2          VL53L0X_writeReg16Bit(dev, FINAL_RANGE_CONFIG_TIMEOUT_MACROP_HI, VL53L0X_encodeTimeout(final_range_tim
+             -eout_mclks));
+ 492   2      
+ 493   2          // set_sequence_step_timeout() end
+ 494   2      
+ 495   2          dev->measurement_timing_budget_us = budget_us; // store for internal reuse
+ 496   2        }
+ 497   1        return true;
+ 498   1      }
+ 499          
+ 500          // Get the measurement timing budget in microseconds
+ 501          // based on VL53L0X_get_measurement_timing_budget_micro_seconds()
+ 502          // in us
+ 503          uint32_t VL53L0X_getMeasurementTimingBudget(struct VL53L0X *dev)
+ 504          {
+ 505   1        xdata struct VL53L0X_SequenceStepEnables enables;
+ 506   1        xdata struct VL53L0X_SequenceStepTimeouts timeouts;
+ 507   1      
+ 508   1        uint16_t const StartOverhead = 1910; // note that this is different than the value in set_
+ 509   1        uint16_t const EndOverhead = 960;
+ 510   1        uint16_t const MsrcOverhead = 660;
+ 511   1        uint16_t const TccOverhead = 590;
+ 512   1        uint16_t const DssOverhead = 690;
+ 513   1        uint16_t const PreRangeOverhead = 660;
+ 514   1        uint16_t const FinalRangeOverhead = 550;
+ 515   1      
+ 516   1        // "Start and end overhead times always present"
+ 517   1        uint32_t budget_us = StartOverhead + EndOverhead;
+ 518   1      
+ 519   1        VL53L0X_getSequenceStepEnables(dev, &enables);
+ 520   1        VL53L0X_getSequenceStepTimeouts(dev, &enables, &timeouts);
+ 521   1      
+ 522   1        if (enables.tcc)
+ 523   1        {
+ 524   2          budget_us += (timeouts.msrc_dss_tcc_us + TccOverhead);
+ 525   2        }
+ 526   1      
+ 527   1        if (enables.dss)
+ 528   1        {
+ 529   2          budget_us += 2 * (timeouts.msrc_dss_tcc_us + DssOverhead);
+ 530   2        }
+ 531   1        else if (enables.msrc)
+ 532   1        {
+ 533   2          budget_us += (timeouts.msrc_dss_tcc_us + MsrcOverhead);
+ 534   2        }
+ 535   1      
+ 536   1        if (enables.pre_range)
+ 537   1        {
+ 538   2          budget_us += (timeouts.pre_range_us + PreRangeOverhead);
+ 539   2        }
+ 540   1      
+ 541   1        if (enables.final_range)
+ 542   1        {
+ 543   2          budget_us += (timeouts.final_range_us + FinalRangeOverhead);
+ 544   2        }
+ 545   1      
+ 546   1        dev->measurement_timing_budget_us = budget_us; // store for internal reuse
+ 547   1        return budget_us;
+ 548   1      }
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 10  
+
+ 549          
+ 550          // Set the VCSEL (vertical cavity surface emitting laser) pulse period for the
+ 551          // given period type (pre-range or final range) to the given value in PCLKs.
+ 552          // Longer periods seem to increase the potential range of the sensor.
+ 553          // Valid values are (even numbers only):
+ 554          //  pre:  12 to 18 (initialized default: 14)
+ 555          //  final: 8 to 14 (initialized default: 10)
+ 556          // based on VL53L0X_set_vcsel_pulse_period()
+ 557          bool VL53L0X_setVcselPulsePeriod(struct VL53L0X *dev, enum VL53L0X_vcselPeriodType type, uint8_t period_pc
+             -lks)
+ 558          {
+ 559   1        uint8_t vcsel_period_reg = encodeVcselPeriod(period_pclks);
+ 560   1        uint16_t new_pre_range_timeout_mclks;
+ 561   1        uint16_t new_msrc_timeout_mclks;
+ 562   1        uint16_t new_final_range_timeout_mclks;
+ 563   1        uint8_t sequence_config;
+ 564   1      
+ 565   1        xdata struct VL53L0X_SequenceStepEnables enables;
+ 566   1        xdata struct VL53L0X_SequenceStepTimeouts timeouts;
+ 567   1      
+ 568   1        VL53L0X_getSequenceStepEnables(dev, &enables);
+ 569   1        VL53L0X_getSequenceStepTimeouts(dev, &enables, &timeouts);
+ 570   1      
+ 571   1        // "Apply specific settings for the requested clock period"
+ 572   1        // "Re-calculate and apply timeouts, in macro periods"
+ 573   1      
+ 574   1        // "When the VCSEL period for the pre or final range is changed,
+ 575   1        // the corresponding timeout must be read from the device using
+ 576   1        // the current VCSEL period, then the new VCSEL period can be
+ 577   1        // applied. The timeout then must be written back to the device
+ 578   1        // using the new VCSEL period.
+ 579   1        //
+ 580   1        // For the MSRC timeout, the same applies - this timeout being
+ 581   1        // dependant on the pre-range vcsel period."
+ 582   1      
+ 583   1        if (type == VcselPeriodPreRange)
+ 584   1        {
+ 585   2          // "Set phase check limits"
+ 586   2          switch (period_pclks)
+ 587   2          {
+ 588   3          case 12:
+ 589   3            VL53L0X_writeReg(dev, PRE_RANGE_CONFIG_VALID_PHASE_HIGH, 0x18);
+ 590   3            break;
+ 591   3      
+ 592   3          case 14:
+ 593   3            VL53L0X_writeReg(dev, PRE_RANGE_CONFIG_VALID_PHASE_HIGH, 0x30);
+ 594   3            break;
+ 595   3      
+ 596   3          case 16:
+ 597   3            VL53L0X_writeReg(dev, PRE_RANGE_CONFIG_VALID_PHASE_HIGH, 0x40);
+ 598   3            break;
+ 599   3      
+ 600   3          case 18:
+ 601   3            VL53L0X_writeReg(dev, PRE_RANGE_CONFIG_VALID_PHASE_HIGH, 0x50);
+ 602   3            break;
+ 603   3      
+ 604   3          default:
+ 605   3            // invalid period
+ 606   3            return false;
+ 607   3          }
+ 608   2          VL53L0X_writeReg(dev, PRE_RANGE_CONFIG_VALID_PHASE_LOW, 0x08);
+ 609   2      
+ 610   2          // apply new VCSEL period
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 11  
+
+ 611   2          VL53L0X_writeReg(dev, PRE_RANGE_CONFIG_VCSEL_PERIOD, vcsel_period_reg);
+ 612   2      
+ 613   2          // update timeouts
+ 614   2      
+ 615   2          // set_sequence_step_timeout() begin
+ 616   2          // (SequenceStepId == VL53L0X_SEQUENCESTEP_PRE_RANGE)
+ 617   2      
+ 618   2          new_pre_range_timeout_mclks = VL53L0X_timeoutMicrosecondsToMclks(timeouts.pre_range_us, period_pclks);
+ 619   2      
+ 620   2          VL53L0X_writeReg16Bit(dev, PRE_RANGE_CONFIG_TIMEOUT_MACROP_HI, VL53L0X_encodeTimeout(new_pre_range_tim
+             -eout_mclks));
+ 621   2      
+ 622   2          // set_sequence_step_timeout() end
+ 623   2      
+ 624   2          // set_sequence_step_timeout() begin
+ 625   2          // (SequenceStepId == VL53L0X_SEQUENCESTEP_MSRC)
+ 626   2      
+ 627   2          new_msrc_timeout_mclks = VL53L0X_timeoutMicrosecondsToMclks(timeouts.msrc_dss_tcc_us, period_pclks);
+ 628   2      
+ 629   2          VL53L0X_writeReg(dev, MSRC_CONFIG_TIMEOUT_MACROP, (new_msrc_timeout_mclks > 256) ? 255 : (new_msrc_tim
+             -eout_mclks - 1));
+ 630   2      
+ 631   2          // set_sequence_step_timeout() end
+ 632   2        }
+ 633   1        else if (type == VcselPeriodFinalRange)
+ 634   1        {
+ 635   2          switch (period_pclks)
+ 636   2          {
+ 637   3          case 8:
+ 638   3            VL53L0X_writeReg(dev, FINAL_RANGE_CONFIG_VALID_PHASE_HIGH, 0x10);
+ 639   3            VL53L0X_writeReg(dev, FINAL_RANGE_CONFIG_VALID_PHASE_LOW, 0x08);
+ 640   3            VL53L0X_writeReg(dev, GLOBAL_CONFIG_VCSEL_WIDTH, 0x02);
+ 641   3            VL53L0X_writeReg(dev, ALGO_PHASECAL_CONFIG_TIMEOUT, 0x0C);
+ 642   3            VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 643   3            VL53L0X_writeReg(dev, ALGO_PHASECAL_LIM, 0x30);
+ 644   3            VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 645   3            break;
+ 646   3      
+ 647   3          case 10:
+ 648   3            VL53L0X_writeReg(dev, FINAL_RANGE_CONFIG_VALID_PHASE_HIGH, 0x28);
+ 649   3            VL53L0X_writeReg(dev, FINAL_RANGE_CONFIG_VALID_PHASE_LOW, 0x08);
+ 650   3            VL53L0X_writeReg(dev, GLOBAL_CONFIG_VCSEL_WIDTH, 0x03);
+ 651   3            VL53L0X_writeReg(dev, ALGO_PHASECAL_CONFIG_TIMEOUT, 0x09);
+ 652   3            VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 653   3            VL53L0X_writeReg(dev, ALGO_PHASECAL_LIM, 0x20);
+ 654   3            VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 655   3            break;
+ 656   3      
+ 657   3          case 12:
+ 658   3            VL53L0X_writeReg(dev, FINAL_RANGE_CONFIG_VALID_PHASE_HIGH, 0x38);
+ 659   3            VL53L0X_writeReg(dev, FINAL_RANGE_CONFIG_VALID_PHASE_LOW, 0x08);
+ 660   3            VL53L0X_writeReg(dev, GLOBAL_CONFIG_VCSEL_WIDTH, 0x03);
+ 661   3            VL53L0X_writeReg(dev, ALGO_PHASECAL_CONFIG_TIMEOUT, 0x08);
+ 662   3            VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 663   3            VL53L0X_writeReg(dev, ALGO_PHASECAL_LIM, 0x20);
+ 664   3            VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 665   3            break;
+ 666   3      
+ 667   3          case 14:
+ 668   3            VL53L0X_writeReg(dev, FINAL_RANGE_CONFIG_VALID_PHASE_HIGH, 0x48);
+ 669   3            VL53L0X_writeReg(dev, FINAL_RANGE_CONFIG_VALID_PHASE_LOW, 0x08);
+ 670   3            VL53L0X_writeReg(dev, GLOBAL_CONFIG_VCSEL_WIDTH, 0x03);
+ 671   3            VL53L0X_writeReg(dev, ALGO_PHASECAL_CONFIG_TIMEOUT, 0x07);
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 12  
+
+ 672   3            VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 673   3            VL53L0X_writeReg(dev, ALGO_PHASECAL_LIM, 0x20);
+ 674   3            VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 675   3            break;
+ 676   3      
+ 677   3          default:
+ 678   3            // invalid period
+ 679   3            return false;
+ 680   3          }
+ 681   2      
+ 682   2          // apply new VCSEL period
+ 683   2          VL53L0X_writeReg(dev, FINAL_RANGE_CONFIG_VCSEL_PERIOD, vcsel_period_reg);
+ 684   2      
+ 685   2          // update timeouts
+ 686   2      
+ 687   2          // set_sequence_step_timeout() begin
+ 688   2          // (SequenceStepId == VL53L0X_SEQUENCESTEP_FINAL_RANGE)
+ 689   2      
+ 690   2          // "For the final range timeout, the pre-range timeout
+ 691   2          //  must be added. To do this both final and pre-range
+ 692   2          //  timeouts must be expressed in macro periods MClks
+ 693   2          //  because they have different vcsel periods."
+ 694   2      
+ 695   2          new_final_range_timeout_mclks = VL53L0X_timeoutMicrosecondsToMclks(timeouts.final_range_us, period_pcl
+             -ks);
+ 696   2      
+ 697   2          if (enables.pre_range)
+ 698   2          {
+ 699   3            new_final_range_timeout_mclks += timeouts.pre_range_mclks;
+ 700   3          }
+ 701   2      
+ 702   2          VL53L0X_writeReg16Bit(dev, FINAL_RANGE_CONFIG_TIMEOUT_MACROP_HI, VL53L0X_encodeTimeout(new_final_range
+             -_timeout_mclks));
+ 703   2      
+ 704   2          // set_sequence_step_timeout end
+ 705   2        }
+ 706   1        else
+ 707   1        {
+ 708   2          // invalid type
+ 709   2          return false;
+ 710   2        }
+ 711   1      
+ 712   1        // "Finally, the timing budget must be re-applied"
+ 713   1      
+ 714   1        VL53L0X_setMeasurementTimingBudget(dev, dev->measurement_timing_budget_us);
+ 715   1      
+ 716   1        // "Perform the phase calibration. This is needed after changing on vcsel period."
+ 717   1        // VL53L0X_perform_phase_calibration() begin
+ 718   1      
+ 719   1        sequence_config = VL53L0X_readReg(dev, SYSTEM_SEQUENCE_CONFIG);
+ 720   1        VL53L0X_writeReg(dev, SYSTEM_SEQUENCE_CONFIG, 0x02);
+ 721   1        VL53L0X_performSingleRefCalibration(dev, 0x0);
+ 722   1        VL53L0X_writeReg(dev, SYSTEM_SEQUENCE_CONFIG, sequence_config);
+ 723   1      
+ 724   1        // VL53L0X_perform_phase_calibration() end
+ 725   1      
+ 726   1        return true;
+ 727   1      }
+ 728          
+ 729          // Get the VCSEL pulse period in PCLKs for the given period type.
+ 730          // based on VL53L0X_get_vcsel_pulse_period()
+ 731          uint8_t VL53L0X_getVcselPulsePeriod(struct VL53L0X *dev, enum VL53L0X_vcselPeriodType type)
+ 732          {
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 13  
+
+ 733   1        if (type == VcselPeriodPreRange)
+ 734   1        {
+ 735   2          return decodeVcselPeriod(VL53L0X_readReg(dev, PRE_RANGE_CONFIG_VCSEL_PERIOD));
+ 736   2        }
+ 737   1        else if (type == VcselPeriodFinalRange)
+ 738   1        {
+ 739   2          return decodeVcselPeriod(VL53L0X_readReg(dev, FINAL_RANGE_CONFIG_VCSEL_PERIOD));
+ 740   2        }
+ 741   1        else
+ 742   1        {
+ 743   2          return 255;
+ 744   2        }
+ 745   1      }
+ 746          
+ 747          // Start continuous ranging measurements. If period_ms (optional) is 0 or not
+ 748          // given, continuous back-to-back mode is used (the sensor takes measurements as
+ 749          // often as possible); otherwise, continuous timed mode is used, with the given
+ 750          // inter-measurement period in milliseconds determining how often the sensor
+ 751          // takes a measurement.
+ 752          // based on VL53L0X_StartMeasurement()
+ 753          void VL53L0X_startContinuous(struct VL53L0X *dev, uint32_t period_ms)
+ 754          {
+ 755   1        VL53L0X_writeReg(dev, 0x80, 0x01);
+ 756   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 757   1        VL53L0X_writeReg(dev, 0x00, 0x00);
+ 758   1        VL53L0X_writeReg(dev, 0x91, dev->stop_variable);
+ 759   1        VL53L0X_writeReg(dev, 0x00, 0x01);
+ 760   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 761   1        VL53L0X_writeReg(dev, 0x80, 0x00);
+ 762   1      
+ 763   1        if (period_ms != 0)
+ 764   1        {
+ 765   2          // continuous timed mode
+ 766   2      
+ 767   2          // VL53L0X_SetInterMeasurementPeriodMilliSeconds() begin
+ 768   2      
+ 769   2          uint16_t osc_calibrate_val = VL53L0X_readReg16Bit(dev, OSC_CALIBRATE_VAL);
+ 770   2      
+ 771   2          if (osc_calibrate_val != 0)
+ 772   2          {
+ 773   3            period_ms *= osc_calibrate_val;
+ 774   3          }
+ 775   2      
+ 776   2          VL53L0X_writeReg32Bit(dev, SYSTEM_INTERMEASUREMENT_PERIOD, period_ms);
+ 777   2      
+ 778   2          // VL53L0X_SetInterMeasurementPeriodMilliSeconds() end
+ 779   2      
+ 780   2          VL53L0X_writeReg(dev, SYSRANGE_START, 0x04); // VL53L0X_REG_SYSRANGE_MODE_TIMED
+ 781   2        }
+ 782   1        else
+ 783   1        {
+ 784   2          // continuous back-to-back mode
+ 785   2          VL53L0X_writeReg(dev, SYSRANGE_START, 0x02); // VL53L0X_REG_SYSRANGE_MODE_BACKTOBACK
+ 786   2        }
+ 787   1      }
+ 788          
+ 789          // Stop continuous measurements
+ 790          // based on VL53L0X_StopMeasurement()
+ 791          void VL53L0X_stopContinuous(struct VL53L0X *dev)
+ 792          {
+ 793   1        VL53L0X_writeReg(dev, SYSRANGE_START, 0x01); // VL53L0X_REG_SYSRANGE_MODE_SINGLESHOT
+ 794   1      
+ 795   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 14  
+
+ 796   1        VL53L0X_writeReg(dev, 0x00, 0x00);
+ 797   1        VL53L0X_writeReg(dev, 0x91, 0x00);
+ 798   1        VL53L0X_writeReg(dev, 0x00, 0x01);
+ 799   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 800   1      }
+ 801          
+ 802          // Returns a range reading in millimeters when continuous mode is active
+ 803          // (readRangeSingleMillimeters() also calls this function after starting a
+ 804          // single-shot range measurement)
+ 805          uint16_t VL53L0X_readRangeContinuousMillimeters(struct VL53L0X *dev)
+ 806          {
+ 807   1        uint16_t range;
+ 808   1      
+ 809   1        VL53L0X_startTimeout(dev);
+ 810   1        while ((VL53L0X_readReg(dev, RESULT_INTERRUPT_STATUS) & 0x07) == 0)
+ 811   1        {
+ 812   2          if (VL53L0X_checkTimeoutExpired(dev))
+ 813   2          {
+ 814   3            dev->did_timeout = true;
+ 815   3            return 65535;
+ 816   3          }
+ 817   2        }
+ 818   1      
+ 819   1        // assumptions: Linearity Corrective Gain is 1000 (default);
+ 820   1        // fractional ranging is not enabled
+ 821   1        range = VL53L0X_readReg16Bit(dev, RESULT_RANGE_STATUS + 10);
+ 822   1      
+ 823   1        VL53L0X_writeReg(dev, SYSTEM_INTERRUPT_CLEAR, 0x01);
+ 824   1      
+ 825   1        return range;
+ 826   1      }
+ 827          
+ 828          // Performs a single-shot range measurement and returns the reading in
+ 829          // millimeters
+ 830          // based on VL53L0X_PerformSingleRangingMeasurement()
+ 831          uint16_t VL53L0X_readRangeSingleMillimeters(struct VL53L0X *dev)
+ 832          {
+ 833   1        VL53L0X_writeReg(dev, 0x80, 0x01);
+ 834   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 835   1        VL53L0X_writeReg(dev, 0x00, 0x00);
+ 836   1        VL53L0X_writeReg(dev, 0x91, dev->stop_variable);
+ 837   1        VL53L0X_writeReg(dev, 0x00, 0x01);
+ 838   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 839   1        VL53L0X_writeReg(dev, 0x80, 0x00);
+ 840   1      
+ 841   1        VL53L0X_writeReg(dev, SYSRANGE_START, 0x01);
+ 842   1      
+ 843   1        // "Wait until start bit has been cleared"
+ 844   1        VL53L0X_startTimeout(dev);
+ 845   1        while (VL53L0X_readReg(dev, SYSRANGE_START) & 0x01)
+ 846   1        {
+ 847   2          if (VL53L0X_checkTimeoutExpired(dev))
+ 848   2          {
+ 849   3            dev->did_timeout = true;
+ 850   3            return 65535;
+ 851   3          }
+ 852   2        }
+ 853   1      
+ 854   1        return VL53L0X_readRangeContinuousMillimeters(dev);
+ 855   1      }
+ 856          
+ 857          // Did a timeout occur in one of the read functions since the last call to
+ 858          // timeoutOccurred()?
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 15  
+
+ 859          bool VL53L0X_timeoutOccurred(struct VL53L0X *dev)
+ 860          {
+ 861   1        bool tmp = dev->did_timeout;
+ 862   1        dev->did_timeout = false;
+ 863   1        return tmp;
+ 864   1      }
+ 865          
+ 866          // Get reference SPAD (single photon avalanche diode) count and type
+ 867          // based on VL53L0X_get_info_from_device(),
+ 868          // but only gets reference SPAD count and type
+ 869          bool VL53L0X_getSpadInfo(struct VL53L0X *dev, uint8_t *count, unsigned char *type_is_aperture)
+ 870          {
+ 871   1        uint8_t tmp;
+ 872   1      
+ 873   1        VL53L0X_writeReg(dev, 0x80, 0x01);
+ 874   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 875   1        VL53L0X_writeReg(dev, 0x00, 0x00);
+ 876   1      
+ 877   1        VL53L0X_writeReg(dev, 0xFF, 0x06);
+ 878   1        VL53L0X_writeReg(dev, 0x83, VL53L0X_readReg(dev, 0x83) | 0x04);
+ 879   1        VL53L0X_writeReg(dev, 0xFF, 0x07);
+ 880   1        VL53L0X_writeReg(dev, 0x81, 0x01);
+ 881   1      
+ 882   1        VL53L0X_writeReg(dev, 0x80, 0x01);
+ 883   1      
+ 884   1        VL53L0X_writeReg(dev, 0x94, 0x6b);
+ 885   1        VL53L0X_writeReg(dev, 0x83, 0x00);
+ 886   1        VL53L0X_startTimeout(dev);
+ 887   1        while (VL53L0X_readReg(dev, 0x83) == 0x00)
+ 888   1        {
+ 889   2          if (VL53L0X_checkTimeoutExpired(dev))
+ 890   2          {
+ 891   3            return false;
+ 892   3          }
+ 893   2        }
+ 894   1        VL53L0X_writeReg(dev, 0x83, 0x01);
+ 895   1        tmp = VL53L0X_readReg(dev, 0x92);
+ 896   1      
+ 897   1        *count = tmp & 0x7f;
+ 898   1        *type_is_aperture = (tmp >> 7) & 0x01;
+ 899   1      
+ 900   1        VL53L0X_writeReg(dev, 0x81, 0x00);
+ 901   1        VL53L0X_writeReg(dev, 0xFF, 0x06);
+ 902   1        VL53L0X_writeReg(dev, 0x83, VL53L0X_readReg(dev, 0x83) & ~0x04);
+ 903   1        VL53L0X_writeReg(dev, 0xFF, 0x01);
+ 904   1        VL53L0X_writeReg(dev, 0x00, 0x01);
+ 905   1      
+ 906   1        VL53L0X_writeReg(dev, 0xFF, 0x00);
+ 907   1        VL53L0X_writeReg(dev, 0x80, 0x00);
+ 908   1      
+ 909   1        return true;
+ 910   1      }
+ 911          
+ 912          // Get sequence step enables
+ 913          // based on VL53L0X_GetSequenceStepEnables()
+ 914          void VL53L0X_getSequenceStepEnables(struct VL53L0X *dev, struct VL53L0X_SequenceStepEnables *enables)
+ 915          {
+ 916   1        uint8_t sequence_config = VL53L0X_readReg(dev, SYSTEM_SEQUENCE_CONFIG);
+ 917   1      
+ 918   1        enables->tcc = (sequence_config >> 4) & 0x1;
+ 919   1        enables->dss = (sequence_config >> 3) & 0x1;
+ 920   1        enables->msrc = (sequence_config >> 2) & 0x1;
+ 921   1        enables->pre_range = (sequence_config >> 6) & 0x1;
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 16  
+
+ 922   1        enables->final_range = (sequence_config >> 7) & 0x1;
+ 923   1      }
+ 924          
+ 925          // Get sequence step timeouts
+ 926          // based on get_sequence_step_timeout(),
+ 927          // but gets all timeouts instead of just the requested one, and also stores
+ 928          // intermediate values
+ 929          void VL53L0X_getSequenceStepTimeouts(struct VL53L0X *dev, struct VL53L0X_SequenceStepEnables *enables, str
+             -uct VL53L0X_SequenceStepTimeouts *timeouts)
+ 930          {
+ 931   1        timeouts->pre_range_vcsel_period_pclks = VL53L0X_getVcselPulsePeriod(dev, VcselPeriodPreRange);
+ 932   1      
+ 933   1        timeouts->msrc_dss_tcc_mclks = VL53L0X_readReg(dev, MSRC_CONFIG_TIMEOUT_MACROP) + 1;
+ 934   1        timeouts->msrc_dss_tcc_us = VL53L0X_timeoutMclksToMicroseconds(timeouts->msrc_dss_tcc_mclks, timeouts->p
+             -re_range_vcsel_period_pclks);
+ 935   1      
+ 936   1        timeouts->pre_range_mclks = VL53L0X_decodeTimeout(VL53L0X_readReg16Bit(dev, PRE_RANGE_CONFIG_TIMEOUT_MAC
+             -ROP_HI));
+ 937   1        timeouts->pre_range_us = VL53L0X_timeoutMclksToMicroseconds(timeouts->pre_range_mclks, timeouts->pre_ran
+             -ge_vcsel_period_pclks);
+ 938   1      
+ 939   1        timeouts->final_range_vcsel_period_pclks = VL53L0X_getVcselPulsePeriod(dev, VcselPeriodFinalRange);
+ 940   1      
+ 941   1        timeouts->final_range_mclks = VL53L0X_decodeTimeout(VL53L0X_readReg16Bit(dev, FINAL_RANGE_CONFIG_TIMEOUT
+             -_MACROP_HI));
+ 942   1      
+ 943   1        if (enables->pre_range)
+ 944   1        {
+ 945   2          timeouts->final_range_mclks -= timeouts->pre_range_mclks;
+ 946   2        }
+ 947   1      
+ 948   1        timeouts->final_range_us = VL53L0X_timeoutMclksToMicroseconds(timeouts->final_range_mclks, timeouts->fin
+             -al_range_vcsel_period_pclks);
+ 949   1      }
+ 950          
+ 951          // Decode sequence step timeout in MCLKs from register value
+ 952          // based on VL53L0X_decode_timeout()
+ 953          // Note: the original function returned a uint32_t, but the return value is
+ 954          // always stored in a uint16_t.
+ 955          uint16_t VL53L0X_decodeTimeout(uint16_t reg_val)
+ 956          {
+ 957   1        // format: "(LSByte * 2^MSByte) + 1"
+ 958   1        return (uint16_t)((reg_val & 0x00FF) << (uint16_t)((reg_val & 0xFF00) >> 8)) + 1;
+ 959   1      }
+ 960          
+ 961          // Encode sequence step timeout register value from timeout in MCLKs
+ 962          // based on VL53L0X_encode_timeout()
+ 963          // Note: the original function took a uint16_t, but the argument passed to it
+ 964          // is always a uint16_t.
+ 965          uint16_t VL53L0X_encodeTimeout(uint16_t timeout_mclks)
+ 966          {
+ 967   1        // format: "(LSByte * 2^MSByte) + 1"
+ 968   1      
+ 969   1        uint32_t ls_byte = 0;
+ 970   1        uint16_t ms_byte = 0;
+ 971   1      
+ 972   1        if (timeout_mclks > 0)
+ 973   1        {
+ 974   2          ls_byte = timeout_mclks - 1;
+ 975   2      
+ 976   2          while ((ls_byte & 0xFFFFFF00) > 0)
+ 977   2          {
+ 978   3            ls_byte >>= 1;
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 17  
+
+ 979   3            ms_byte++;
+ 980   3          }
+ 981   2      
+ 982   2          return (ms_byte << 8) | (ls_byte & 0xFF);
+ 983   2        }
+ 984   1        else
+ 985   1        {
+ 986   2          return 0;
+ 987   2        }
+ 988   1      }
+ 989          
+ 990          // Convert sequence step timeout from MCLKs to microseconds with given VCSEL period in PCLKs
+ 991          // based on VL53L0X_calc_timeout_us()
+ 992          uint32_t VL53L0X_timeoutMclksToMicroseconds(uint16_t timeout_period_mclks, uint8_t vcsel_period_pclks)
+ 993          {
+ 994   1        uint32_t macro_period_ns = calcMacroPeriod(vcsel_period_pclks);
+ 995   1      
+ 996   1        return ((timeout_period_mclks * macro_period_ns) + (macro_period_ns / 2)) / 1000;
+ 997   1      }
+ 998          
+ 999          // Convert sequence step timeout from microseconds to MCLKs with given VCSEL period in PCLKs
+1000          // based on VL53L0X_calc_timeout_mclks()
+1001          uint32_t VL53L0X_timeoutMicrosecondsToMclks(uint32_t timeout_period_us, uint8_t vcsel_period_pclks)
+1002          {
+1003   1        uint32_t macro_period_ns = calcMacroPeriod(vcsel_period_pclks);
+1004   1      
+1005   1        return (((timeout_period_us * 1000) + (macro_period_ns / 2)) / macro_period_ns);
+1006   1      }
+1007          
+1008          // based on VL53L0X_perform_single_ref_calibration()
+1009          bool VL53L0X_performSingleRefCalibration(struct VL53L0X *dev, uint8_t vhv_init_byte)
+1010          {
+1011   1        VL53L0X_writeReg(dev, SYSRANGE_START, 0x01 | vhv_init_byte); // VL53L0X_REG_SYSRANGE_MODE_START_STOP
+1012   1      
+1013   1        VL53L0X_startTimeout(dev);
+1014   1        while ((VL53L0X_readReg(dev, RESULT_INTERRUPT_STATUS) & 0x07) == 0)
+1015   1        {
+1016   2          if (VL53L0X_checkTimeoutExpired(dev))
+1017   2          {
+1018   3            return false;
+1019   3          }
+1020   2        }
+1021   1      
+1022   1        VL53L0X_writeReg(dev, SYSTEM_INTERRUPT_CLEAR, 0x01);
+1023   1      
+1024   1        VL53L0X_writeReg(dev, SYSRANGE_START, 0x00);
+1025   1      
+1026   1        return true;
+1027   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   5642    ----
+   CONSTANT SIZE    =   ----    ----
+   XDATA SIZE       =      8      94
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =   ----     173
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----       1
+   EDATA SIZE       =   ----    ----
+   HDATA SIZE       =   ----    ----
+   XDATA CONST SIZE =   ----    ----
+   FAR CONST SIZE   =   ----    ----
+C51 COMPILER V9.60.0.0   VL53L0X                                                           09/24/2025 18:57:13 PAGE 18  
+
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  1 WARNING(S),  0 ERROR(S)

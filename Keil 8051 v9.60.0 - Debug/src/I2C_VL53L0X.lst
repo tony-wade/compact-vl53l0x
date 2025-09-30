@@ -1,0 +1,164 @@
+C51 COMPILER V9.60.0.0   I2C_VL53L0X                                                       09/18/2025 13:33:40 PAGE 1   
+
+
+C51 COMPILER V9.60.0.0, COMPILATION OF MODULE I2C_VL53L0X
+OBJECT MODULE PLACED IN .\src\I2C_VL53L0X.OBJ
+COMPILER INVOKED BY: C:\SiliconLabs\SimplicityStudio\v5_3\developer\toolchains\keil_8051\9.60\BIN\C51.exe C:\Users\User\
+                    -Desktop\Laser_ranging\ranging_sensor\src\I2C_VL53L0X.c OMF2 SMALL DEBUG OBJECTEXTEND ROM(LARGE) WARNINGLEVEL(2) FLOATFUZ
+                    -ZY(3) OPTIMIZE(8,SPEED) DEFINE(DEBUG=1) INTVECTOR(0X0000) INTPROMOTE INCDIR(C:/SiliconLabs/SimplicityStudio/v5_3/develop
+                    -er/sdks/8051/v4.3.1//Device/shared/si8051Base;C:/SiliconLabs/SimplicityStudio/v5_3/developer/sdks/8051/v4.3.1//Device/C8
+                    -051F380/inc) PRINT(.\src\I2C_VL53L0X.lst) COND PAGEWIDTH(120) PAGELENGTH(65) OBJECT(.\src\I2C_VL53L0X.OBJ)
+
+line level    source
+
+   1          #include "I2C_VL53L0X.h"
+*** ERROR C141 IN LINE 28 OF C:\Users\User\Desktop\Laser_ranging\ranging_sensor\src\I2C_VL53L0X.h: syntax error near ','
+             -, expected '<id>'
+   2          #include <SI_C8051F380_Register_Enums.h>
+   3          #include <stdint.h>
+   4          
+   5          typedef enum {
+   6              I2C_STATE_IDLE,
+   7              I2C_STATE_START,
+   8              I2C_STATE_ADDR_SENT,
+   9              I2C_STATE_TX_DATA,
+  10              I2C_STATE_RX_DATA,
+  11              I2C_STATE_DONE,
+  12              I2C_STATE_ERROR
+  13          } I2C_State_t;
+  14          
+  15          
+  16          static I2C_State_t i2c_state = I2C_STATE_IDLE;
+  17          
+  18          //-----------------------------------------------------------------------------
+  19          //-----------------------------------------------------------------------------
+  20          static volatile uint8_t tx_buffer[MAX_BUFFER_SIZE];
+  21          static volatile uint8_t rx_buffer[MAX_BUFFER_SIZE];
+  22          static volatile uint8_t tx_len = 0, tx_index = 0;
+  23          static volatile uint8_t rx_len = 0, rx_index = 0;
+  24          
+  25          static volatile uint8_t i2c_rw ;
+  26          static volatile uint8_t target_addr;
+  27          
+  28          
+  29          volatile unsigned char i2c_busy = 0;
+  30          
+  31          //-----------------------------------------------------------------------------
+  32          // I2C Core function
+  33          //-----------------------------------------------------------------------------
+  34          void I2C_WriteBytes(uint8_t address, uint8_t* data, uint8_t length)
+*** ERROR C141 IN LINE 34 OF C:\Users\User\Desktop\Laser_ranging\ranging_sensor\src\I2C_VL53L0X.c: syntax error near ','
+             -, expected '<id>'
+  35          {
+  36   1          uint8_t i;
+  37   1          target_addr = address;
+  38   1          tx_len = length;
+  39   1          tx_index = 0;
+  40   1          i2c_rw = I2C_WRITE;
+  41   1          i2c_busy = 1;
+  42   1      
+  43   1          for (i = 0; i < length; i++){
+  44   2              tx_buffer[i] = 3;
+  45   2          }
+  46   1          i2c_state = I2C_STATE_START;
+  47   1          SMB0CN_STA = 1;
+  48   1      }
+C51 COMPILER V9.60.0.0   I2C_VL53L0X                                                       09/18/2025 13:33:40 PAGE 2   
+
+  49          
+  50          void I2C_ReadBytes(uint8_t addr, uint8_t length)
+  51          {
+  52   1          target_addr = addr;
+  53   1          rx_len = length;
+  54   1          rx_index = 0;
+  55   1          i2c_rw = I2C_READ;
+  56   1          i2c_busy = 1;
+  57   1      
+  58   1          i2c_state = I2C_STATE_START;
+  59   1          SMB0CN_STA = 1;
+  60   1      }
+  61          
+  62          
+  63          //-----------------------------------------------------------------------------
+  64          // I2C ISR
+  65          //-----------------------------------------------------------------------------
+  66          SI_INTERRUPT(SMBUS0_ISR, SMBUS0_IRQn)
+  67          {
+  68   1          if (SMB0CN_ARBLOST)
+  69   1          {
+  70   2              i2c_state = I2C_STATE_ERROR;
+  71   2              SMB0CN_STO = 1;
+  72   2              i2c_busy = 0;
+  73   2          }
+  74   1      
+  75   1          switch (SMB0CN & 0xF0)
+  76   1          {
+  77   2              case 0xE0: // START transmitted
+  78   2                  SMB0DAT = (target_addr << 1) | i2c_rw;  // LSB is R/W bit
+  79   2                  i2c_state = I2C_STATE_ADDR_SENT;
+  80   2                  SMB0CN_STA = 0;
+  81   2                  break;
+  82   2      
+  83   2              case 0xC0: // Data byte transmitted, no ACK
+  84   2              case 0xC8: // Address transmitted, no ACK
+  85   2                  i2c_state = I2C_STATE_ERROR;
+  86   2                  SMB0CN_STO = 1;
+  87   2                  i2c_busy = 0;
+  88   2                  break;
+  89   2      
+  90   2              case 0x80: // Data byte received, ACK returned
+  91   2                  rx_buffer[rx_index++] = SMB0DAT;
+  92   2      
+  93   2                  if (rx_index < rx_len)
+  94   2                      SMB0CN_ACK = 1; // ACK, next
+  95   2                  else
+  96   2                  {
+  97   3                      SMB0CN_ACK = 0; // 最後一個 byte，NACK
+  98   3                      SMB0CN_STO = 1; // Send STOP to terminate transfer
+  99   3                      i2c_state = I2C_STATE_DONE;
+ 100   3                      i2c_busy = 0;
+ 101   3                  }
+ 102   2                  break;
+ 103   2      
+ 104   2              case 0xF8: // Bus free
+ 105   2                  break;
+ 106   2      
+ 107   2              case 0xB8: // Data byte transmitted, ACK received
+ 108   2              case 0x28: // Same as above (data phase)
+ 109   2                  if (i2c_state == I2C_STATE_ADDR_SENT && i2c_rw == I2C_WRITE)
+ 110   2                      i2c_state = I2C_STATE_TX_DATA;
+ 111   2      
+C51 COMPILER V9.60.0.0   I2C_VL53L0X                                                       09/18/2025 13:33:40 PAGE 3   
+
+ 112   2                  if (tx_index < tx_len)
+ 113   2                  {
+ 114   3                      SMB0DAT = tx_buffer[tx_index++];
+ 115   3                  }
+ 116   2                  else
+ 117   2                  {
+ 118   3                      SMB0CN_STO = 1;
+ 119   3                      i2c_state = I2C_STATE_DONE;
+ 120   3                      i2c_busy = 0;
+ 121   3                  }
+ 122   2                  break;
+ 123   2      
+ 124   2              case 0x18: // SLA+W transmitted, ACK received
+ 125   2              case 0x40: // SLA+R transmitted, ACK received
+ 126   2                  if (i2c_rw == 1)
+ 127   2                  {
+ 128   3                      i2c_state = I2C_STATE_RX_DATA;
+ 129   3                  }
+ 130   2                  break;
+ 131   2      
+ 132   2              default:
+ 133   2                  i2c_state = I2C_STATE_ERROR;
+ 134   2                  SMB0CN_STO = 1;
+ 135   2                  i2c_busy = 0;
+ 136   2                  break;
+ 137   2          }
+ 138   1      
+ 139   1          SMB0CN_SI = 0; // MUST!
+ 140   1      }
+ 141          
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  2 ERROR(S)
