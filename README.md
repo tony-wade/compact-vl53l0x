@@ -3,9 +3,11 @@ A compact VL53L0X time-of-flight ranging library refactored from the official AP
 
 
 
-## How to 
+## How to use
 
-
+1. Implement your own `I2C_WriteDevice()` and `I2C_ReadDevice()` in **I2C.c** to match your MCU platform.  
+2. Modify the VL53L0X core functions in **VL53L0X.h / VL53L0X.c** if necessary (see comments in code).  
+3. For advanced features or detailed reference, please refer to the official VL53L0X API library (STSW-IMG005).
 
 
 
